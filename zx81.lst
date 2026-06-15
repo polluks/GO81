@@ -1,0 +1,1583 @@
+0000  ; ===========================================================
+0000  ; GO81 - Full ZX81 ROM Port for Commodore 128 (Z80 Mode)
+0000  ; ===========================================================
+0000  ; Runs on C128's Z80 via 8502 bootstrap.
+0000  ; Memory: $0000 vectors, $0100+ code, $4000 sysvars,
+0000  ;         $4200 BASIC, $5000 display, $8000 VIC screen,
+0000  ;         $D000 I/O
+0000  
+0000      ORG $0000
+0000  
+0000  ; ===== Z80 RESTART VECTORS =====
+0000  START_VEC:  DI
+0001              LD SP,$FFFE
+0004              JP INIT_C128
+0007  
+0007      ORG $0008
+0008  ERROR_1_VEC: JP ERROR_1
+000B      ORG $0010
+0010  PRINT_A_VEC: JP PRINT_A
+0013      ORG $0018
+0018  GET_CHAR_VEC: JP GET_CHAR
+001B      ORG $0020
+0020  NEXT_CHAR_VEC: JP NEXT_CHAR
+0023      ORG $0028
+0028  FP_CALC_VEC: JP FP_CALC
+002B      ORG $0030
+0030  BC_SPACES_VEC: JP BC_SPACES
+0033      ORG $0038
+0038  IRQ_VEC:    JP IRQ_HANDLER
+003B  
+003B  ; ===== CONSTANTS =====
+003B  ZX_ROWS     EQU 24
+003B  ZX_COLS     EQU 32
+003B  
+003B  ; System variables at $4000
+003B  ERR_NR      EQU $4000
+003B  FLAGS       EQU $4001       ; bit:7=syntax,6=check,5=run,4=cont,3=numeric,1=break
+003B  ERR_SP      EQU $4002
+003B  RAMTOP      EQU $4004
+003B  E_LINE      EQU $4006
+003B  CH_ADD      EQU $4008
+003B  X_PTR       EQU $400A
+003B  D_FILE      EQU $400C
+003B  DF_CC       EQU $400E
+003B  VARS        EQU $4010
+003B  DEST        EQU $4012
+003B  E_LINE_LO   EQU $4014
+003B  SPARE1      EQU $4016
+003B  SPARE2      EQU $4018
+003B  LAST_K      EQU $4025
+003B  DEBOUNCE    EQU $4027
+003B  MARGIN      EQU $4028
+003B  FRAMES      EQU $4034
+003B  CDFLAG      EQU $403B
+003B  
+003B  ; Character codes
+003B  ZX_NL       EQU $76
+003B  ZX_CRSR     EQU $7F
+003B  ZX_SP       EQU $00
+003B  
+003B  ; Token values
+003B  TK_NEW      EQU $E6
+003B  TK_SCROLL   EQU $E7
+003B  TK_CONT     EQU $E8
+003B  TK_DIM      EQU $E9
+003B  TK_REM      EQU $EA
+003B  TK_FOR      EQU $EB
+003B  TK_GOTO     EQU $EC
+003B  TK_GOSUB    EQU $ED
+003B  TK_INPUT    EQU $EE
+003B  TK_LOAD     EQU $EF
+003B  TK_LIST     EQU $F0
+003B  TK_LET      EQU $F1
+003B  TK_PAUSE    EQU $F2
+003B  TK_NEXT     EQU $F3
+003B  TK_POKE     EQU $F4
+003B  TK_PRINT    EQU $F5
+003B  TK_PLOT     EQU $F6
+003B  TK_RUN      EQU $F7
+003B  TK_SAVE     EQU $F8
+003B  TK_RAND     EQU $F9
+003B  TK_IF       EQU $FA
+003B  TK_CLS      EQU $FB
+003B  TK_UNPLOT   EQU $FC
+003B  TK_CLEAR    EQU $FD
+003B  TK_RETURN   EQU $FE
+003B  TK_COPY     EQU $FF
+003B  TK_STOP     EQU $E3
+003B  TK_THEN     EQU $DE
+003B  TK_TO       EQU $DF
+003B  TK_STEP     EQU $E0
+003B  TK_PEEK     EQU $D3
+003B  TK_USR      EQU $D4
+003B  
+003B  ; ===== RESTART HANDLERS =====
+003B      ORG $0080
+0080  
+0080  ERROR_1:    LD HL,(CH_ADD)
+0083              LD (X_PTR),HL
+0086  ERROR_2:    POP HL
+0087              LD L,(HL)
+0088              LD (IY+0),L
+008B              LD SP,(ERR_SP)
+008E              JP MAIN_LOOP
+0091  
+0091  PRINT_A:    AND A
+0092              JP NZ,PRINT_CH
+0095              JP PRINT_SP
+0098  
+0098  GET_CHAR:   LD HL,(CH_ADD)
+009B              LD A,(HL)
+009C  TEST_SP:    AND A
+009D              RET NZ
+009E              NOP
+009F              NOP
+00A0  
+00A0  NEXT_CHAR:  CALL CH_ADD_INC
+00A3              JR TEST_SP
+00A5  
+00A5  CH_ADD_INC: LD HL,(CH_ADD)
+00A8              INC HL
+00A9              LD (CH_ADD),HL
+00AC              LD A,(HL)
+00AD              CP ZX_CRSR
+00AF              RET NZ
+00B0              JR CH_ADD_INC
+00B2  
+00B2  FP_CALC:    JP CALCULATE
+00B5  END_CALC:   POP AF
+00B6              EXX
+00B7              EX (SP),HL
+00B8              EXX
+00B9              RET
+00BA  
+00BA  BC_SPACES:  PUSH BC
+00BB              LD HL,(E_LINE)
+00BE              PUSH HL
+00BF              JP RESERVE
+00C2  
+00C2  IRQ_HANDLER: RETI
+00C4  
+00C4  ; ===== C128 INITIALIZATION =====
+00C4  INIT_C128:  LD IY,$4000
+00C8              LD A,$3E
+00CA              LD BC,$FF00
+00CD              OUT (C),A
+00CF              LD A,$0B             ; VIC ctrl1: text mode (bit5=0), video on
+00D1              LD BC,$D011
+00D4              OUT (C),A
+00D6              LD A,$C0            ; 40 cols, no multicolor
+00D8              LD BC,$D016
+00DB              OUT (C),A
+00DD              LD A,$10             ; VIC: screen $0000 bank, chargen $1000 bank
+00DF              LD BC,$D018
+00E2              OUT (C),A
+00E4              LD A,$00
+00E6              LD BC,$D020
+00E9              OUT (C),A            ; black border
+00EB              LD A,$01
+00ED              LD BC,$D021
+00F0              OUT (C),A            ; white background
+00F2  
+00F2              ; Select VIC bank 2 ($8000-$BFFF) — screen at $8000, chargen at $9000
+00F2              LD BC,$DD00
+00F5              IN A,(C)
+00F7              AND $FC
+00F9              OR $01
+00FB              OUT (C),A
+00FD  
+00FD              ; Copy font to VIC chargen RAM at $9000 (bank 2, offset $1000)
+00FD              LD HL,$0800
+0100              LD DE,$9000
+0103              LD BC,$0200
+0106              LDIR
+0108  
+0108              ; Color RAM was filled by 8502 bootstrap
+0108  
+0108              ; Init sysvars
+0108              LD HL,$5000
+010B              LD (D_FILE),HL
+010E              LD HL,$4200
+0111              LD (VARS),HL
+0114              LD HL,E_LINE_BUF
+0117              LD (E_LINE),HL
+011A              LD (E_LINE_LO),HL
+011D              LD HL,MAIN_LOOP
+0120              LD (ERR_SP),HL
+0123  
+0123              ; Clear display file
+0123              LD HL,$5000
+0126              LD DE,$5001
+0129              LD BC,ZX_ROWS*(ZX_COLS+1)+1
+012C              LD (HL),ZX_NL
+012E              LDIR
+0130  
+0130              ; Init program area (empty)
+0130              LD HL,$4200
+0133              LD (HL),$00
+0135              INC HL
+0136              LD (HL),$00
+0138  
+0138              ; Set IY for sysvar access
+0138              LD IY,$4000
+013C  
+013C              ; Show welcome
+013C              LD HL,WELCOME_MSG
+013F              CALL PRINT_STRING
+0142  
+0142              JP MAIN_LOOP
+0145  
+0145  WELCOME_MSG: DB "ZX81 ON C128 (GO81)",ZX_NL
+0159               DB "Z80 MODE V0.1",ZX_NL
+0167               DB ZX_NL
+0168               DB "READY.",ZX_NL
+016F               DB 0
+0170  
+0170  PRINT_STRING:
+0170              LD A,(HL)
+0171              AND A
+0172              RET Z
+0173              CP ZX_NL
+0175              JR Z,PS_NL
+0177              PUSH HL
+0178              LD HL,(DF_CC)
+017B              LD (HL),A
+017C              INC HL
+017D              LD (DF_CC),HL
+0180              POP HL
+0181              INC HL
+0182              JR PRINT_STRING
+0184  PS_NL:      INC HL
+0185              CALL DO_NEWLINE
+0188              JR PRINT_STRING
+018A  
+018A  DO_NEWLINE: PUSH HL
+018B              LD HL,(DF_CC)
+018E  DN_LP:      LD A,(HL)
+018F              CP ZX_NL
+0191              JR Z,DN_FOUND
+0193              INC HL
+0194              JR DN_LP
+0196  DN_FOUND:   INC HL
+0197              LD (DF_CC),HL
+019A              POP HL
+019B              RET
+019C  
+019C  ; ===== KEYBOARD MAPPING =====
+019C  ; C128 CIA1 matrix: rows 0-7, cols 0-7
+019C  ; Maps to ZX81 keyboard. ZX81 layout:
+019C  ;   Row0: 1 2 3 4 5 6 7 8 9 0
+019C  ;   Row1: Q W E R T Y U I O P
+019C  ;   Row2: A S D F G H J K L NL
+019C  ;   Row3: SHIFT Z X C V B N M . SPACE
+019C  ; We remap C128 physical layout to ZX81 key codes.
+019C  
+019C  KEYBOARD:   LD HL,$FFFF
+019F              LD B,$08
+01A1  KB_ROW:     LD A,B
+01A2              DEC A
+01A3              LD BC,$DC00
+01A6              OUT (C),A
+01A8              NOP
+01A9              NOP
+01AA              IN A,(C)
+01AC              CPL
+01AD              AND $FF
+01AF              JR Z,KB_NEXT
+01B1              LD C,A
+01B2              LD E,$00
+01B4  KB_COL:     SRL C
+01B6              JR C,KB_FOUND
+01B8              INC E
+01B9              JR KB_COL
+01BB  KB_FOUND:   ; B=row+1 (1-8), E=column (0-7)
+01BB              PUSH BC
+01BC              PUSH DE
+01BD              CALL KEY_MAP
+01C0              POP DE
+01C1              POP BC
+01C2              LD H,B
+01C3              LD L,A
+01C4  KB_NEXT:    DJNZ KB_ROW
+01C6              RET
+01C7  
+01C7  ; Map C128 matrix position to ZX81 character code
+01C7  ; Input: B=row+1, E=col
+01C7  ; Output: A=ZX81 code
+01C7  KEY_MAP:    LD HL,KMTAB
+01CA              LD A,B
+01CB              DEC A
+01CC              RLCA
+01CD              RLCA
+01CE              RLCA
+01CF              ADD A,E
+01D0              LD C,A
+01D1              LD B,0
+01D3              ADD HL,BC
+01D4              LD A,(HL)
+01D5              RET
+01D6  
+01D6  KMTAB:      ; Row 1 (CIA0): INSERT/DEL/HOME etc -> cursor keys
+01D6              DB $70,$71,$72,$77,$75,$00,$79,$00   ; up,down,left,del,edit,func
+01DE              ; Row 2 (CIA1): RETURN, SHIFT etc
+01DE              DB ZX_NL,$00,$00,$00,$00,$00,$00,$00
+01E6              ; Row 3 (CIA2): SPACE, numbers
+01E6              DB $00,$1D,$1E,$1F,$20,$21,$22,$23   ; space,1,2,3,4,5,6
+01EE              ; Row 4 (CIA3): more numbers
+01EE              DB $24,$25,$1C,$0D,$0B,$0B,$00,$00   ; 7,8,9,0,:"' -- FIX
+01F6              ; Row 5 (CIA4): Q-P
+01F6              DB $36,$3C,$2A,$37,$39,$3E,$3A,$2E   ; Q,W,E,R,T,Y,U,I
+01FE              ; Row 6 (CIA5): A-L
+01FE              DB $26,$38,$29,$2B,$2C,$2D,$2F,$30   ; A,S,D,F,G,H,J,K
+0206              ; Row 7 (CIA6): Z-M
+0206              DB $3F,$3D,$28,$3B,$27,$32,$00,$00   ; Z,X,C,V,B,M
+020E              ; Row 8 (CIA7): cursor keys / C128 specials
+020E              DB $70,$71,$72,$00,$00,$00,$00,$00   ; up,down,left
+0216  
+0216  ; ===== MAIN LOOP =====
+0216  MAIN_LOOP:  CALL UPDATE_DISPLAY
+0219              XOR A
+021A              LD (LAST_K),A
+021D              CALL KEYBOARD
+0220              LD A,H
+0221              AND A
+0222              JR Z,ML_IDLE
+0224              LD A,L
+0225              CALL EDITOR
+0228  
+0228  ML_IDLE:    LD A,(FLAGS)
+022A              AND $20
+022C              JR NZ,ML_RUNPROG
+022E              JR MAIN_LOOP
+0230  ML_RUNPROG: CALL RUN_PROG
+0233              JR MAIN_LOOP
+0235  
+0235  ; ===== LINE EDITOR =====
+0235  EDITOR:     CP ZX_NL
+0237              JR Z,ED_ENTER
+0239              CP $77          ; delete
+023B              JR Z,ED_DEL
+023D              CP $70          ; cursor up
+023F              RET Z
+0240              CP $71          ; cursor down
+0242              RET Z
+0243              CP $72          ; cursor left
+0245              RET Z
+0246              ; Regular char
+0246              PUSH AF
+0247              CALL EL_ADD
+024A              POP AF
+024B              RET
+024C  
+024C  ED_ENTER:   CALL PROCESS
+024F              RET
+0250  ED_DEL:     CALL EL_DEL
+0253              RET
+0254  
+0254  EL_ADD:     PUSH AF
+0255              LD HL,(E_LINE)
+0258  EA_LP:      LD A,(HL)
+0259              CP ZX_NL
+025B              JR Z,EA_PUT
+025D              CP $00
+025F              JR Z,EA_PUT
+0261              INC HL
+0262              JR EA_LP
+0264  EA_PUT:     POP AF
+0265              LD (HL),A
+0266              INC HL
+0267              LD (HL),ZX_NL
+0269              RET
+026A  
+026A  EL_DEL:     LD HL,(E_LINE)
+026D              LD DE,E_LINE_BUF
+0270              OR A
+0271              SBC HL,DE
+0272              RET Z
+0273              LD HL,(E_LINE)
+0276  ED_LP:      LD A,(HL)
+0277              CP ZX_NL
+0279              JR Z,ED_BACK
+027B              INC HL
+027C              JR ED_LP
+027E  ED_BACK:    DEC HL
+027F              LD (HL),ZX_NL
+0281              RET
+0282  
+0282  ; ===== PROCESS BASIC LINE =====
+0282  PROCESS:    LD HL,E_LINE_BUF
+0285              LD A,(HL)
+0286              CP ZX_NL
+0288              RET Z
+0289              CP ZX_SP
+028B              JR Z,PR_DIRECT
+028D              CP TK_PRINT
+028F              JR Z,PR_DIRECT
+0291              CP TK_LIST
+0293              JR Z,PR_DIRECT
+0295              CP TK_RUN
+0297              JR Z,PR_DIRECT
+0299              CP TK_CLS
+029B              JR Z,PR_DIRECT
+029D              CP TK_REM
+029F              JR Z,PR_DIRECT
+02A1              CP TK_LET
+02A3              JR Z,PR_DIRECT
+02A5  
+02A5              ; Check for line number (digit 1-9)
+02A5              CP $1D          ; '1'
+02A7              JR C,PR_DIRECT
+02A9              CP $26          ; '9'+1
+02AB              JR C,PR_NUMBER
+02AD  
+02AD  PR_DIRECT:  ; Immediate command
+02AD              LD HL,E_LINE_BUF
+02B0              LD (CH_ADD),HL
+02B3              CALL SCAN_LINE
+02B6              RET
+02B7  
+02B7  PR_NUMBER:  ; Line with number -> insert into program
+02B7              ; Skip number (simplified - for now treat as comment)
+02B7              RET
+02B8  
+02B8  ; ===== SCAN AND EXECUTE BASIC LINE =====
+02B8  SCAN_LINE:  LD HL,(CH_ADD)
+02BB              LD A,(HL)
+02BC              CP ZX_NL
+02BE              RET Z
+02BF              CP $00
+02C1              RET Z
+02C2  
+02C2              ; Check command
+02C2              CP TK_REM
+02C4              JR Z,SL_REM
+02C6              CP TK_PRINT
+02C8              JR Z,SL_PRINT
+02CA              CP TK_LET
+02CC              JR Z,SL_LET
+02CE              CP TK_GOTO
+02D0              JR Z,SL_GOTO
+02D2              CP TK_GOSUB
+02D4              JR Z,SL_GOSUB
+02D6              CP TK_RETURN
+02D8              JR Z,SL_RETURN
+02DA              CP TK_IF
+02DC              JR Z,SL_IF
+02DE              CP TK_FOR
+02E0              JR Z,SL_FOR
+02E2              CP TK_NEXT
+02E4              JR Z,SL_NEXT
+02E6              CP TK_INPUT
+02E8              JR Z,SL_INPUT
+02EA              CP TK_LIST
+02EC              JR Z,SL_LIST
+02EE              CP TK_RUN
+02F0              JR Z,SL_RUN
+02F2              CP TK_CLS
+02F4              JR Z,SL_CLS
+02F6              CP TK_CLEAR
+02F8              JR Z,SL_CLEAR
+02FA              CP TK_POKE
+02FC              JR Z,SL_POKE
+02FE              CP TK_PAUSE
+0300              JR Z,SL_PAUSE
+0302              CP TK_STOP
+0304              JR Z,SL_STOP
+0306              CP TK_NEW
+0308              JR Z,SL_NEW
+030A              CP TK_RAND
+030C              JR Z,SL_RAND
+030E              CP TK_PLOT
+0310              JR Z,SL_PLOT
+0312              CP TK_UNPLOT
+0314              JR Z,SL_UNPLOT
+0316              CP TK_LOAD
+0318              JR Z,SL_LOAD
+031A              CP TK_SAVE
+031C              JR Z,SL_SAVE
+031E  
+031E              ; If not a command, try as LET (variable assignment)
+031E              JR SL_LET
+0320  
+0320  SL_REM:     CALL SKIP_EOL
+0323              RET
+0324  SL_PRINT:   CALL CMD_PRINT
+0327              RET
+0328  SL_LET:     CALL CMD_LET
+032B              RET
+032C  SL_GOTO:    CALL CMD_GOTO
+032F              RET
+0330  SL_GOSUB:   CALL CMD_GOSUB
+0333              RET
+0334  SL_RETURN:  CALL CMD_RETURN
+0337              RET
+0338  SL_IF:      CALL CMD_IF
+033B              RET
+033C  SL_FOR:     CALL CMD_FOR
+033F              RET
+0340  SL_NEXT:    CALL CMD_NEXT
+0343              RET
+0344  SL_INPUT:   CALL CMD_INPUT
+0347              RET
+0348  SL_LIST:    CALL CMD_LIST
+034B              RET
+034C  SL_RUN:     CALL CMD_RUN
+034F              RET
+0350  SL_CLS:     CALL CMD_CLS
+0353              RET
+0354  SL_CLEAR:   CALL CMD_CLEAR
+0357              RET
+0358  SL_POKE:    CALL CMD_POKE
+035B              RET
+035C  SL_PAUSE:   CALL CMD_PAUSE
+035F              RET
+0360  SL_STOP:    CALL CMD_STOP
+0363              RET
+0364  SL_NEW:     CALL CMD_NEW
+0367              RET
+0368  SL_RAND:    CALL CMD_RAND
+036B              RET
+036C  SL_PLOT:    CALL CMD_PLOT
+036F              RET
+0370  SL_UNPLOT:  CALL CMD_UNPLOT
+0373              RET
+0374  SL_LOAD:    CALL CMD_LOAD
+0377              RET
+0378  SL_SAVE:    CALL CMD_SAVE
+037B              RET
+037C  
+037C  SKIP_EOL:   LD HL,(CH_ADD)
+037F  SE_LP:      LD A,(HL)
+0380              CP ZX_NL
+0382              RET Z
+0383              CP $00
+0385              RET Z
+0386              INC HL
+0387              LD (CH_ADD),HL
+038A              JR SE_LP
+038C  
+038C  ; ===== EXPRESSION SCANNER =====
+038C  ; Returns value on FP stack (5 bytes)
+038C  ; String results set bit 3 of FLAGS
+038C  
+038C  SCANNING:   LD HL,(CH_ADD)
+038F              ; Skip spaces
+038F  SC_SKIP:    LD A,(HL)
+0390              AND A
+0391              JR NZ,SC_NS
+0393              INC HL
+0394              JR SC_SKIP
+0396  SC_NS:      LD (CH_ADD),HL
+0399  
+0399              ; Check for number
+0399              CP $1C          ; '0'
+039B              JR C,SC_NOTNUM
+039D              CP $26          ; '9'+1
+039F              JR C,SC_NUM
+03A1  
+03A1  SC_NOTNUM:  CP $0B          ; '"' -> string
+03A3              JR Z,SC_STRING
+03A5              CP TK_PEEK
+03A7              JR Z,SC_PEEK
+03A9              CP TK_USR
+03AB              JR Z,SC_USR
+03AD              ; Check for variable name (A-Z)
+03AD              CP $26          ; 'A'
+03AF              JR C,SC_SYNTAX
+03B1              CP $40          ; 'Z'+1
+03B3              JR C,SC_VAR
+03B5  SC_SYNTAX:
+03B5              ; Push zero as default
+03B5              CALL STK_ZERO
+03B8              RET
+03B9  
+03B9  SC_NUM:     ; Parse decimal number
+03B9              CALL DEC_TO_FP
+03BC              RET
+03BD  
+03BD  SC_STRING:  ; Parse string literal
+03BD              INC HL
+03BE              LD DE,FP_STRBUF
+03C1              LD B,0
+03C3  SC_STRLP:   LD A,(HL)
+03C4              CP ZX_NL
+03C6              JR Z,SC_STREND
+03C8              CP $0B          ; closing quote
+03CA              JR Z,SC_STREND
+03CC              CP $00
+03CE              JR Z,SC_STREND
+03D0              LD (DE),A
+03D1              INC HL
+03D2              INC DE
+03D3              INC B
+03D4              JR SC_STRLP
+03D6  SC_STREND:  INC HL
+03D7              LD (CH_ADD),HL
+03DA              LD (FP_STRLN),BC
+03DE              ; Set string flag
+03DE              LD HL,FLAGS
+03E1              RES 3,(HL)      ; not numeric
+03E3              RET
+03E4  
+03E4  SC_PEEK:    INC HL
+03E5              LD (CH_ADD),HL
+03E8              CALL SCANNING
+03EB              CALL FP_TO_BC
+03EE              LD H,B
+03EF              LD L,C
+03F0              LD A,(HL)
+03F1              CALL STACK_A
+03F4              RET
+03F5  
+03F5  SC_USR:     INC HL
+03F6              LD (CH_ADD),HL
+03F9              CALL SCANNING
+03FC              ; For now, return 0
+03FC              CALL STK_ZERO
+03FF              RET
+0400  
+0400  SC_VAR:     ; Single letter variable
+0400              LD C,A
+0401              LD B,0
+0403              PUSH BC
+0404              INC HL
+0405              LD (CH_ADD),HL
+0408              CALL LOOK_VAR
+040B              POP BC
+040C              RET
+040D  
+040D  ; ===== VARIABLE LOOKUP =====
+040D  LOOK_VAR:   ; C = variable name (letter code)
+040D              ; Returns value on FP stack
+040D              LD HL,(VARS)
+0410  LV_LOOP:    LD A,(HL)
+0411              CP $00
+0413              JR Z,LV_NEW
+0415              CP C
+0416              JR Z,LV_FOUND
+0418              ; Skip to next variable (5 bytes FP + 1 letter)
+0418              LD A,(HL)
+0419              AND $3F
+041B              CP $20          ; string variable?
+041D              JR NZ,LV_SKIP_FP
+041F              INC HL          ; skip past string
+0420              INC HL
+0421  LV_SKIP_FP: INC HL
+0422              INC HL
+0423              INC HL
+0424              INC HL
+0425              INC HL
+0426              JR LV_LOOP
+0428  
+0428  LV_NEW:     ; Create variable with value 0
+0428              LD A,C
+0429              LD (HL),A
+042A              INC HL
+042B              CALL STK_ZERO
+042E              ; Copy 5 bytes to variable area
+042E              LD DE,FP_VALUE
+0431              LD B,5
+0433  LV_COPY:    LD A,(DE)
+0435              LD (HL),A
+0436              INC HL
+0437              INC DE
+0438              DJNZ LV_COPY
+043A              LD (HL),0
+043C              RET
+043D  
+043D  LV_FOUND:   ; Load value from variable
+043D              INC HL
+043E              LD DE,FP_VALUE
+0441              LD B,5
+0443  LV_LOAD:    LD A,(HL)
+0444              LD (DE),A
+0445              INC HL
+0446              INC DE
+0447              DJNZ LV_LOAD
+0449              RET
+044A  
+044A  ; ===== DECIMAL TO FP =====
+044A  DEC_TO_FP:  CALL STK_ZERO
+044D              LD HL,(CH_ADD)
+0450  DTF_LP:     LD A,(HL)
+0451              CP $1C          ; '0'
+0453              JR C,DTF_DONE
+0455              CP $26          ; '9'+1
+0457              JR NC,DTF_DONE
+0459              SUB $1C         ; digit value
+045B              PUSH AF
+045C              ; Multiply FP value by 10
+045C              CALL STK_TEN
+045F              CALL FP_MULT
+0462              POP AF
+0463              CALL STACK_A
+0466              CALL FP_ADD
+0469              INC HL
+046A              JR DTF_LP
+046C  DTF_DONE:   LD (CH_ADD),HL
+046F              RET
+0470  
+0470  ; ===== FLOATING POINT STACK =====
+0470  ; 5 bytes per value: 1 exp + 4 mantissa (ZX81 format)
+0470  ; exp = $80+value, mantissa = 32-bit normalized
+0470  
+0470  STK_ZERO:   XOR A
+0471  STK_A:      LD HL,FP_VALUE
+0474              LD (HL),A
+0475              INC HL
+0476              LD (HL),$00
+0478              INC HL
+0479              LD (HL),$00
+047B              INC HL
+047C              LD (HL),$00
+047E              INC HL
+047F              LD (HL),$00
+0481              RET
+0482  
+0482  STACK_A:    ; Stack single byte A as integer
+0482              LD C,A
+0483              LD B,0
+0485  STACK_BC:   ; Fall through
+0485  
+0485  STK_BC:     ; Stack BC as integer
+0485              LD A,$81
+0487              LD (FP_EXP),A
+048A              LD A,B
+048B              LD (FP_HIGH),A
+048E              LD A,C
+048F              LD (FP_LOW+0),A
+0492              XOR A
+0493              LD (FP_LOW+1),A
+0496              LD (FP_LOW+2),A
+0499              CALL FP_NORM
+049C              RET
+049D  
+049D  STK_TEN:    ; Load constant 10 into FP
+049D              LD HL,FP_TEN
+04A0              LD DE,FP_VALUE
+04A3              LD BC,5
+04A6              LDIR
+04A8              RET
+04A9  
+04A9  FP_TEN:     DB $84,$20,$00,$00,$00
+04AE  
+04AE  STK_ONE:    LD HL,FP_ONE
+04B1              LD DE,FP_VALUE
+04B4              LD BC,5
+04B7              LDIR
+04B9              RET
+04BA  
+04BA  FP_ONE:     DB $81,$00,$00,$00,$00
+04BF  
+04BF  ; ===== FP TO INTEGER =====
+04BF  FP_TO_BC:   ; Convert FP to BC (truncated)
+04BF              LD HL,FP_VALUE
+04C2              LD A,(HL)       ; exponent
+04C3              SUB $81
+04C5              JR C,FPBC_ZERO  ; < 1 -> 0
+04C7              CP $10
+04C9              JR NC,FPBC_BIG  ; too big
+04CB              ; Shift mantissa right
+04CB              INC HL
+04CC              LD B,(HL)
+04CD              INC HL
+04CE              LD C,(HL)
+04CF              INC HL
+04D0              LD D,(HL)
+04D1              INC HL
+04D2              LD E,(HL)
+04D3              ; Shift left by A bits
+04D3              AND $FF
+04D5              JR Z,FPBC_DONE
+04D7  FPBC_SH:    SLA B
+04D9              RL C
+04DB              RL D
+04DD              RL E
+04DF              DEC A
+04E0              JR NZ,FPBC_SH
+04E2  FPBC_DONE:  LD A,B
+04E3              LD C,B
+04E4              LD B,$00
+04E6              RET
+04E7  FPBC_ZERO:  LD BC,$0000
+04EA              RET
+04EB  FPBC_BIG:   LD BC,$FFFF
+04EE              RET
+04EF  
+04EF  FP_NORM:    ; Normalize FP value
+04EF              LD HL,FP_VALUE
+04F2              LD A,(HL)       ; exp
+04F3              CP $00
+04F5              RET Z           ; zero
+04F6              INC HL
+04F7              LD B,(HL)
+04F8              LD C,$00
+04FA  FN_LP:      LD A,B
+04FB              AND $80
+04FD              JR NZ,FN_DONE
+04FF              SLA B
+0501              RL C
+0503              INC HL
+0504              RL (HL)
+0506              DEC HL
+0507              DEC A           ; dec exp
+0508              LD (FP_VALUE),A
+050B              JR FN_LP
+050D  FN_DONE:    RET
+050E  
+050E  ; ===== FP ARITHMETIC (stubs -> placeholder) =====
+050E  FP_ADD:     RET
+050F  FP_MULT:    RET
+0510  
+0510  CALCULATE:  ; FP calculator - processes bytecode stream
+0510              ; For now, just returns
+0510              RET
+0511  
+0511  ; ===== PRINT NUMBER =====
+0511  PRINT_NUM:  ; Convert FP to decimal string and print
+0511              CALL FP_TO_BC
+0514              LD HL,FP_DECBUF
+0517              LD DE,10000
+051A              CALL PN_DIGIT
+051D              LD DE,1000
+0520              CALL PN_DIGIT
+0523              LD DE,100
+0526              CALL PN_DIGIT
+0529              LD DE,10
+052C              CALL PN_DIGIT
+052F              LD A,C
+0530              ADD A,$1C        ; to ZX81 digit
+0532              LD (HL),A
+0533              INC HL
+0534              LD (HL),0
+0536  
+0536              ; Print buffer
+0536              LD HL,FP_DECBUF
+0539  PN_LP:      LD A,(HL)
+053A              AND A
+053B              RET Z
+053C              PUSH HL
+053D              CALL PRINT_CH
+0540              POP HL
+0541              INC HL
+0542              JR PN_LP
+0544  
+0544  PN_DIGIT:   LD A,$1C-1      ; '0'-1
+0546  PD_LP:      INC A
+0547              OR A
+0548              SBC HL,DE
+0549              JR NC,PD_LP
+054B              ADD HL,DE
+054C              LD (BC),A
+054D              RET
+054E  
+054E  ; ===== COMMAND: PRINT =====
+054E  CMD_PRINT:  LD HL,(CH_ADD)
+0551              INC HL          ; skip PRINT token
+0552              LD (CH_ADD),HL
+0555  
+0555  CP_LOOP:    LD HL,(CH_ADD)
+0558              LD A,(HL)
+0559              CP ZX_NL
+055B              JR Z,CP_NL
+055D              CP $00
+055F              JR Z,CP_END
+0561              CP $14          ; comma
+0563              JR Z,CP_COMMA
+0565              CP $0D          ; ';' (actually $0D in ZX81)
+0567              JR Z,CP_SEMI
+0569  
+0569              ; Evaluate expression
+0569              CALL SCANNING
+056C  
+056C              ; Check if numeric or string
+056C              LD A,(FLAGS)
+056E              AND $08         ; numeric flag
+0570              JR NZ,CP_NUM
+0572  
+0572              ; Print string
+0572              LD HL,FP_STRLN
+0575              LD C,(HL)
+0576              LD HL,FP_STRBUF
+0579  CP_STRLP:   LD A,C
+057A              AND A
+057B              JR Z,CP_LOOP
+057D              LD A,(HL)
+057E              PUSH HL
+057F              PUSH BC
+0580              CALL PRINT_CH
+0583              POP BC
+0584              POP HL
+0585              INC HL
+0586              DEC C
+0587              JR CP_STRLP
+0589  
+0589  CP_NUM:     CALL PRINT_NUM
+058C              JR CP_LOOP
+058E  
+058E  CP_COMMA:   ; Tab to next column
+058E              INC HL
+058F              LD (CH_ADD),HL
+0592              LD A,$00        ; space
+0594              CALL PRINT_CH
+0597              CALL PRINT_CH
+059A              JR CP_LOOP
+059C  
+059C  CP_SEMI:    INC HL
+059D              LD (CH_ADD),HL
+05A0              JR CP_LOOP
+05A2  
+05A2  CP_NL:      ; Print newline and end
+05A2              CALL DO_NEWLINE
+05A5              INC HL
+05A6              LD (CH_ADD),HL
+05A9  CP_END:     RET
+05AA  
+05AA  ; ===== COMMAND: LET =====
+05AA  CMD_LET:    LD HL,(CH_ADD)
+05AD              INC HL          ; skip LET token
+05AE              LD (CH_ADD),HL
+05B1  
+05B1              ; Expect variable letter
+05B1              LD HL,(CH_ADD)
+05B4              LD A,(HL)
+05B5              CP $26          ; 'A'
+05B7              RET C
+05B8              CP $40          ; 'Z'+1
+05BA              RET NC
+05BB  
+05BB              PUSH AF         ; save var letter
+05BC              INC HL
+05BD              LD (CH_ADD),HL
+05C0  
+05C0              ; Expect '=' sign (token $14 in ZX81 or $1B)
+05C0              LD HL,(CH_ADD)
+05C3              LD A,(HL)
+05C4              CP $1B          ; '.'
+05C6              JR Z,CL_EQ
+05C8              CP $14          ; '='
+05CA              JR Z,CL_EQ
+05CC              POP AF
+05CD              RET
+05CE  
+05CE  CL_EQ:      INC HL
+05CF              LD (CH_ADD),HL
+05D2  
+05D2              ; Evaluate expression
+05D2              CALL SCANNING
+05D5  
+05D5              ; Store result in variable
+05D5              POP AF          ; var letter
+05D6              LD C,A
+05D7              CALL LOOK_VAR_MUT
+05DA  
+05DA              RET
+05DB  
+05DB  LOOK_VAR_MUT: ; Like LOOK_VAR but for assignment
+05DB              ; C = variable letter, FP_VALUE has value
+05DB              LD HL,(VARS)
+05DE  LV_M_LOOP:  LD A,(HL)
+05DF              CP $00
+05E1              JR Z,LV_M_NEW
+05E3              CP C
+05E4              JR Z,LV_M_FOUND
+05E6              INC HL
+05E7              INC HL
+05E8              INC HL
+05E9              INC HL
+05EA              INC HL
+05EB              INC HL
+05EC              JR LV_M_LOOP
+05EE  
+05EE  LV_M_NEW:   LD A,C
+05EF              LD (HL),A
+05F0              INC HL
+05F1              LD DE,FP_VALUE
+05F4              LD B,5
+05F6  LV_M_CP:    LD A,(DE)
+05F8              LD (HL),A
+05F9              INC HL
+05FA              INC DE
+05FB              DJNZ LV_M_CP
+05FD              LD (HL),0
+05FF              RET
+0600  
+0600  LV_M_FOUND: INC HL
+0601              LD DE,FP_VALUE
+0604              LD B,5
+0606  LV_M_ST:    LD A,(DE)
+0608              LD (HL),A
+0609              INC HL
+060A              INC DE
+060B              DJNZ LV_M_ST
+060D              RET
+060E  
+060E  ; ===== COMMAND: GOTO =====
+060E  CMD_GOTO:   LD HL,(CH_ADD)
+0611              INC HL
+0612              LD (CH_ADD),HL
+0615              CALL SCANNING
+0618              CALL FP_TO_BC
+061B              ; BC = line number
+061B              CALL FIND_LINE
+061E              LD (CH_ADD),HL
+0621              RET
+0622  
+0622  FIND_LINE:  ; BC = line number to find
+0622              ; Returns HL = CH_ADD, or original if not found
+0622              LD HL,$4200     ; program start
+0625  FL_LP:      LD A,(HL)
+0626              INC HL
+0627              CP $00
+0629              RET Z           ; not found, return
+062A              CP C
+062B              JR Z,FL_FOUND
+062D              ; Skip to next line
+062D  FL_SKIP:    LD A,(HL)
+062E              CP ZX_NL
+0630              JR Z,FL_NEXT
+0632              INC HL
+0633              JR FL_SKIP
+0635  FL_NEXT:    INC HL
+0636              JR FL_LP
+0638  FL_FOUND:   DEC HL
+0639              RET
+063A  
+063A  ; ===== COMMAND: GOSUB =====
+063A  CMD_GOSUB:  LD HL,(CH_ADD)
+063D              INC HL
+063E              LD (CH_ADD),HL
+0641              CALL SCANNING
+0644              CALL FP_TO_BC
+0647              ; Push return address
+0647              LD HL,(CH_ADD)
+064A              PUSH HL
+064B              CALL FIND_LINE
+064E              LD (CH_ADD),HL
+0651              SET 5,(IY+FLAGS-$4000) ; run flag
+0655              RET
+0656  
+0656  ; ===== COMMAND: RETURN =====
+0656  CMD_RETURN: LD HL,(CH_ADD)
+0659              INC HL
+065A              LD (CH_ADD),HL
+065D              POP HL          ; return address
+065E              LD (CH_ADD),HL
+0661              RET
+0662  
+0662  ; ===== COMMAND: IF =====
+0662  CMD_IF:     LD HL,(CH_ADD)
+0665              INC HL
+0666              LD (CH_ADD),HL
+0669              CALL SCANNING   ; evaluate condition
+066C              ; Check if result is zero
+066C              LD HL,FP_VALUE
+066F              LD A,(HL)
+0670              AND A
+0671              JR NZ,CI_TRUE
+0673              ; Find THEN or skip line
+0673              LD HL,(CH_ADD)
+0676  CI_SKIP:    LD A,(HL)
+0677              CP ZX_NL
+0679              RET Z
+067A              CP TK_THEN
+067C              JR Z,CI_THEN
+067E              INC HL
+067F              JR CI_SKIP
+0681  CI_TRUE:    LD HL,(CH_ADD)
+0684  CI_THEN:    LD A,(HL)
+0685              CP TK_THEN
+0687              JR NZ,CI_EXEC
+0689              INC HL
+068A  CI_EXEC:    LD (CH_ADD),HL
+068D              CALL SCAN_LINE
+0690              RET
+0691  
+0691  ; ===== COMMAND: FOR =====
+0691  CMD_FOR:    RET
+0692  
+0692  ; ===== COMMAND: NEXT =====
+0692  CMD_NEXT:   RET
+0693  
+0693  ; ===== COMMAND: INPUT =====
+0693  CMD_INPUT:  RET
+0694  
+0694  ; ===== COMMAND: LIST =====
+0694  CMD_LIST:   LD HL,$4200
+0697              LD DE,$5000     ; display start
+069A  CL_LP:      LD A,(HL)
+069B              CP $00
+069D              RET Z
+069E              LD A,(HL)
+069F              INC HL
+06A0              CP ZX_NL
+06A2              JR Z,CL_NEXT
+06A4              ; Print char
+06A4              PUSH HL
+06A5              CALL PRINT_CH
+06A8              POP HL
+06A9              JR CL_LP
+06AB  CL_NEXT:    CALL DO_NEWLINE
+06AE              JR CL_LP
+06B0  
+06B0  ; ===== COMMAND: RUN =====
+06B0  CMD_RUN:    LD HL,$4200
+06B3              LD (CH_ADD),HL
+06B6              SET 5,(IY+FLAGS-$4000)
+06BA              RET
+06BB  
+06BB  RUN_PROG:   ; Execute next statement in running program
+06BB              LD HL,(CH_ADD)
+06BE              LD A,(HL)
+06BF              CP $00
+06C1              JR Z,RP_END
+06C3              CP ZX_NL
+06C5              JR Z,RP_NEXT
+06C7              CALL SCAN_LINE
+06CA              RET
+06CB  RP_NEXT:    INC HL
+06CC              LD (CH_ADD),HL
+06CF              RET
+06D0  RP_END:     RES 5,(IY+FLAGS-$4000)
+06D4              RET
+06D5  
+06D5  ; ===== COMMAND: CLS =====
+06D5  CMD_CLS:    LD HL,$5000
+06D8              LD B,ZX_ROWS*(ZX_COLS+1)
+06DA  CL_LP2:     LD (HL),$00
+06DC              INC HL
+06DD              DJNZ CL_LP2
+06DF              LD HL,$5000
+06E2              LD (DF_CC),HL
+06E5              RET
+06E6  
+06E6  ; ===== COMMAND: CLEAR =====
+06E6  CMD_CLEAR:  ; Clear variables
+06E6              LD HL,$4200
+06E9  CLR_LP:     LD A,(HL)
+06EA              AND A
+06EB              JR Z,CLR_DONE
+06ED              INC HL
+06EE              JR CLR_LP
+06F0  CLR_DONE:   INC HL
+06F1              LD (VARS),HL
+06F4              RET
+06F5  
+06F5  ; ===== COMMAND: POKE =====
+06F5  CMD_POKE:   LD HL,(CH_ADD)
+06F8              INC HL
+06F9              LD (CH_ADD),HL
+06FC              CALL SCANNING
+06FF              CALL FP_TO_BC   ; BC = address
+0702              LD H,B
+0703              LD L,C
+0704              PUSH HL
+0705              CALL SCANNING
+0708              CALL FP_TO_BC   ; BC = value
+070B              POP HL
+070C              LD A,C
+070D              LD (HL),A
+070E              RET
+070F  
+070F  ; ===== COMMAND: PAUSE =====
+070F  CMD_PAUSE:  RET
+0710  
+0710  ; ===== COMMAND: STOP =====
+0710  CMD_STOP:   RES 5,(IY+FLAGS-$4000)
+0714              RET
+0715  
+0715  ; ===== COMMAND: NEW =====
+0715  CMD_NEW:    LD HL,$4200
+0718              LD (HL),$00
+071A              INC HL
+071B              LD (HL),$00
+071D              RES 5,(IY+FLAGS-$4000)
+0721              RET
+0722  
+0722  ; ===== COMMAND: RANDOMIZE =====
+0722  CMD_RAND:   RET
+0723  
+0723  ; ===== COMMAND: PLOT / UNPLOT =====
+0723  CMD_PLOT:   RET
+0724  CMD_UNPLOT: RET
+0725  
+0725  ; ===== COMMAND: LOAD / SAVE =====
+0725  CMD_LOAD:   RET
+0726  CMD_SAVE:   RET
+0727  
+0727  ; ===== DISPLAY UPDATE =====
+0727  UPDATE_DISPLAY:
+0727              LD IX,$5000
+072B              LD IY,$8000
+072F              LD B,ZX_ROWS
+0731  UD_ROW:     LD A,(IX+0)
+0734              CP ZX_NL
+0736              JR NZ,UD_CO
+0738              INC IX
+073A  UD_CO:      PUSH BC
+073B              LD B,ZX_COLS
+073D  UD_CH:      LD A,(IX+0)
+0740              CP $00
+0742              JR Z,UD_SP
+0744              CP ZX_NL
+0746              JR Z,UD_SP
+0748              AND $3F
+074A              JR UD_WR
+074C  UD_SP:      LD A,$20
+074E  UD_WR:      LD (IY+0),A
+0751              INC IX
+0753              INC IY
+0755              DJNZ UD_CH
+0757              LD A,(IX+0)
+075A              CP ZX_NL
+075C              JR NZ,UD_NX
+075E              INC IX
+0760  UD_NX:      POP BC
+0761              DJNZ UD_ROW
+0763              RET
+0764  
+0764  ; ===== CHARACTER FONT =====
+0764      ORG $0800
+0800  
+0800  ; ZX81 font: 64 chars, 8 bytes each
+0800  ; Chars $00-$3F
+0800  CHAR_SET:
+0800  ; $00 space
+0800  DB $00,$00,$00,$00,$00,$00,$00,$00
+0808  ; $01-$0A graphics blocks
+0808  DB $F0,$F0,$F0,$F0,$00,$00,$00,$00
+0810  DB $0F,$0F,$0F,$0F,$00,$00,$00,$00
+0818  DB $FF,$FF,$FF,$FF,$00,$00,$00,$00
+0820  DB $00,$00,$00,$00,$F0,$F0,$F0,$F0
+0828  DB $F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0
+0830  DB $0F,$0F,$0F,$0F,$F0,$F0,$F0,$F0
+0838  DB $FF,$FF,$FF,$FF,$F0,$F0,$F0,$F0
+0840  DB $AA,$55,$AA,$55,$AA,$55,$AA,$55
+0848  DB $00,$00,$00,$00,$AA,$55,$AA,$55
+0850  DB $AA,$55,$AA,$55,$00,$00,$00,$00
+0858  ; $0B quote
+0858  DB $00,$24,$24,$00,$00,$00,$00,$00
+0860  ; $0C pound
+0860  DB $00,$1C,$22,$78,$20,$20,$7E,$00
+0868  ; $0D dollar
+0868  DB $00,$08,$3E,$28,$3E,$0A,$3E,$08
+0870  ; $0E colon
+0870  DB $00,$00,$00,$10,$00,$00,$10,$00
+0878  ; $0F question
+0878  DB $00,$3C,$42,$04,$08,$00,$08,$00
+0880  ; $10 lparen
+0880  DB $00,$04,$08,$08,$08,$08,$04,$00
+0888  ; $11 rparen
+0888  DB $00,$20,$10,$10,$10,$10,$20,$00
+0890  ; $12 greater
+0890  DB $00,$00,$08,$3E,$1C,$3E,$08,$00
+0898  ; $13 less
+0898  DB $00,$00,$00,$10,$38,$10,$00,$00
+08A0  ; $14 equals
+08A0  DB $00,$00,$00,$3E,$00,$3E,$00,$00
+08A8  ; $15 plus
+08A8  DB $00,$00,$08,$08,$3E,$08,$08,$00
+08B0  ; $16 minus
+08B0  DB $00,$00,$00,$00,$3E,$00,$00,$00
+08B8  ; $17 star/multiply
+08B8  DB $00,$00,$22,$14,$08,$14,$22,$00
+08C0  ; $18 slash
+08C0  DB $00,$00,$04,$08,$10,$20,$00,$00
+08C8  ; $19 semicolon
+08C8  DB $00,$00,$10,$00,$00,$10,$20,$00
+08D0  ; $1A comma
+08D0  DB $00,$00,$00,$00,$00,$08,$10,$20
+08D8  ; $1B period
+08D8  DB $00,$00,$00,$00,$00,$08,$00,$00
+08E0  ; $1C-25 digits 0-9
+08E0  DB $00,$3C,$44,$4C,$54,$64,$44,$3C  ; 0
+08E8  DB $00,$08,$18,$08,$08,$08,$08,$1C  ; 1
+08F0  DB $00,$3C,$44,$04,$08,$10,$20,$7C  ; 2
+08F8  DB $00,$3C,$44,$04,$18,$04,$44,$3C  ; 3
+0900  DB $00,$08,$18,$28,$48,$7C,$08,$08  ; 4
+0908  DB $00,$7C,$40,$40,$78,$04,$44,$3C  ; 5
+0910  DB $00,$3C,$44,$40,$78,$44,$44,$3C  ; 6
+0918  DB $00,$7C,$04,$08,$10,$10,$10,$10  ; 7
+0920  DB $00,$3C,$44,$44,$3C,$44,$44,$3C  ; 8
+0928  DB $00,$3C,$44,$44,$3C,$04,$44,$3C  ; 9
+0930  ; $26-$3F letters A-Z and punctuation
+0930  DB $00,$18,$24,$44,$44,$7C,$44,$44  ; A
+0938  DB $00,$78,$44,$44,$78,$44,$44,$78  ; B
+0940  DB $00,$3C,$44,$40,$40,$40,$44,$3C  ; C
+0948  DB $00,$78,$44,$44,$44,$44,$44,$78  ; D
+0950  DB $00,$7C,$40,$40,$78,$40,$40,$7C  ; E
+0958  DB $00,$7C,$40,$40,$78,$40,$40,$40  ; F
+0960  DB $00,$3C,$44,$40,$40,$4C,$44,$3C  ; G
+0968  DB $00,$44,$44,$44,$7C,$44,$44,$44  ; H
+0970  DB $00,$7C,$10,$10,$10,$10,$10,$7C  ; I
+0978  DB $00,$04,$04,$04,$04,$04,$44,$3C  ; J
+0980  DB $00,$44,$48,$50,$60,$50,$48,$44  ; K
+0988  DB $00,$40,$40,$40,$40,$40,$40,$7C  ; L
+0990  DB $00,$44,$44,$64,$54,$4C,$44,$44  ; M
+0998  DB $00,$44,$44,$64,$54,$4C,$44,$44  ; N
+09A0  DB $00,$3C,$44,$44,$44,$44,$44,$3C  ; O
+09A8  DB $00,$78,$44,$44,$78,$40,$40,$40  ; P
+09B0  DB $00,$3C,$44,$44,$44,$54,$48,$34  ; Q
+09B8  DB $00,$78,$44,$44,$78,$48,$44,$44  ; R
+09C0  DB $00,$3C,$44,$40,$3C,$04,$44,$3C  ; S
+09C8  DB $00,$7C,$10,$10,$10,$10,$10,$10  ; T
+09D0  DB $00,$44,$44,$44,$44,$44,$44,$3C  ; U
+09D8  DB $00,$44,$44,$44,$44,$44,$28,$10  ; V
+09E0  DB $00,$44,$44,$44,$54,$54,$54,$28  ; W
+09E8  DB $00,$44,$44,$28,$10,$28,$44,$44  ; X
+09F0  DB $00,$44,$44,$44,$28,$10,$10,$10  ; Y
+09F8  DB $00,$7C,$04,$08,$10,$20,$40,$7C  ; Z
+0A00  
+0A00  ; ===== DATA AREAS =====
+0A00      ORG $1C00
+1C00  
+1C00  E_LINE_BUF: DS 256, $00
+1D00              DB ZX_NL
+1D01  
+1D01      ORG $1E00
+1E00  
+1E00  FP_VALUE:   DS 5            ; exp, high, low, low, low
+1E05  FP_EXP      EQU FP_VALUE
+1E05  FP_HIGH     EQU FP_VALUE+1
+1E05  FP_LOW      EQU FP_VALUE+2
+1E05  FP_STRLN:   DS 2
+1E07  FP_STRBUF:  DS 80
+1E57  FP_DECBUF:  DS 12
+1E63  
+1E63  ; ===== RETURN TO 8502 =====
+1E63  RETURN:     LD A,$3F
+1E65              LD BC,$FF00
+1E68              OUT (C),A
+1E6A              JP $FFE0
+1E6D  
+1E6D      END
+1E6D  
+
+Symbols:
+START_VEC            = $0000
+ZX_SP                = $0000
+ERROR_1_VEC          = $0008
+PRINT_A_VEC          = $0010
+GET_CHAR_VEC         = $0018
+ZX_ROWS              = $0018
+NEXT_CHAR_VEC        = $0020
+ZX_COLS              = $0020
+FP_CALC_VEC          = $0028
+BC_SPACES_VEC        = $0030
+IRQ_VEC              = $0038
+ZX_NL                = $0076
+ZX_CRSR              = $007F
+ERROR_1              = $0080
+ERROR_2              = $0086
+PRINT_A              = $0091
+GET_CHAR             = $0098
+TEST_SP              = $009C
+NEXT_CHAR            = $00A0
+CH_ADD_INC           = $00A5
+FP_CALC              = $00B2
+END_CALC             = $00B5
+BC_SPACES            = $00BA
+IRQ_HANDLER          = $00C2
+INIT_C128            = $00C4
+TK_PEEK              = $00D3
+TK_USR               = $00D4
+TK_THEN              = $00DE
+TK_TO                = $00DF
+TK_STEP              = $00E0
+TK_STOP              = $00E3
+TK_NEW               = $00E6
+TK_SCROLL            = $00E7
+TK_CONT              = $00E8
+TK_DIM               = $00E9
+TK_REM               = $00EA
+TK_FOR               = $00EB
+TK_GOTO              = $00EC
+TK_GOSUB             = $00ED
+TK_INPUT             = $00EE
+TK_LOAD              = $00EF
+TK_LIST              = $00F0
+TK_LET               = $00F1
+TK_PAUSE             = $00F2
+TK_NEXT              = $00F3
+TK_POKE              = $00F4
+TK_PRINT             = $00F5
+TK_PLOT              = $00F6
+TK_RUN               = $00F7
+TK_SAVE              = $00F8
+TK_RAND              = $00F9
+TK_IF                = $00FA
+TK_CLS               = $00FB
+TK_UNPLOT            = $00FC
+TK_CLEAR             = $00FD
+TK_RETURN            = $00FE
+TK_COPY              = $00FF
+WELCOME_MSG          = $0145
+PRINT_STRING         = $0170
+PS_NL                = $0184
+DO_NEWLINE           = $018A
+DN_LP                = $018E
+DN_FOUND             = $0196
+KEYBOARD             = $019C
+KB_ROW               = $01A1
+KB_COL               = $01B4
+KB_FOUND             = $01BB
+KB_NEXT              = $01C4
+KEY_MAP              = $01C7
+KMTAB                = $01D6
+MAIN_LOOP            = $0216
+ML_IDLE              = $0228
+ML_RUNPROG           = $0230
+EDITOR               = $0235
+ED_ENTER             = $024C
+ED_DEL               = $0250
+EL_ADD               = $0254
+EA_LP                = $0258
+EA_PUT               = $0264
+EL_DEL               = $026A
+ED_LP                = $0276
+ED_BACK              = $027E
+PROCESS              = $0282
+PR_DIRECT            = $02AD
+PR_NUMBER            = $02B7
+SCAN_LINE            = $02B8
+SL_REM               = $0320
+SL_PRINT             = $0324
+SL_LET               = $0328
+SL_GOTO              = $032C
+SL_GOSUB             = $0330
+SL_RETURN            = $0334
+SL_IF                = $0338
+SL_FOR               = $033C
+SL_NEXT              = $0340
+SL_INPUT             = $0344
+SL_LIST              = $0348
+SL_RUN               = $034C
+SL_CLS               = $0350
+SL_CLEAR             = $0354
+SL_POKE              = $0358
+SL_PAUSE             = $035C
+SL_STOP              = $0360
+SL_NEW               = $0364
+SL_RAND              = $0368
+SL_PLOT              = $036C
+SL_UNPLOT            = $0370
+SL_LOAD              = $0374
+SL_SAVE              = $0378
+SKIP_EOL             = $037C
+SE_LP                = $037F
+SCANNING             = $038C
+SC_SKIP              = $038F
+SC_NS                = $0396
+SC_NOTNUM            = $03A1
+SC_SYNTAX            = $03B5
+SC_NUM               = $03B9
+SC_STRING            = $03BD
+SC_STRLP             = $03C3
+SC_STREND            = $03D6
+SC_PEEK              = $03E4
+SC_USR               = $03F5
+SC_VAR               = $0400
+LOOK_VAR             = $040D
+LV_LOOP              = $0410
+LV_SKIP_FP           = $0421
+LV_NEW               = $0428
+LV_COPY              = $0433
+LV_FOUND             = $043D
+LV_LOAD              = $0443
+DEC_TO_FP            = $044A
+DTF_LP               = $0450
+DTF_DONE             = $046C
+STK_ZERO             = $0470
+STK_A                = $0471
+STACK_A              = $0482
+STACK_BC             = $0485
+STK_BC               = $0485
+STK_TEN              = $049D
+FP_TEN               = $04A9
+STK_ONE              = $04AE
+FP_ONE               = $04BA
+FP_TO_BC             = $04BF
+FPBC_SH              = $04D7
+FPBC_DONE            = $04E2
+FPBC_ZERO            = $04E7
+FPBC_BIG             = $04EB
+FP_NORM              = $04EF
+FN_LP                = $04FA
+FN_DONE              = $050D
+FP_ADD               = $050E
+FP_MULT              = $050F
+CALCULATE            = $0510
+PRINT_NUM            = $0511
+PN_LP                = $0539
+PN_DIGIT             = $0544
+PD_LP                = $0546
+CMD_PRINT            = $054E
+CP_LOOP              = $0555
+CP_STRLP             = $0579
+CP_NUM               = $0589
+CP_COMMA             = $058E
+CP_SEMI              = $059C
+CP_NL                = $05A2
+CP_END               = $05A9
+CMD_LET              = $05AA
+CL_EQ                = $05CE
+LOOK_VAR_MUT         = $05DB
+LV_M_LOOP            = $05DE
+LV_M_NEW             = $05EE
+LV_M_CP              = $05F6
+LV_M_FOUND           = $0600
+LV_M_ST              = $0606
+CMD_GOTO             = $060E
+FIND_LINE            = $0622
+FL_LP                = $0625
+FL_SKIP              = $062D
+FL_NEXT              = $0635
+FL_FOUND             = $0638
+CMD_GOSUB            = $063A
+CMD_RETURN           = $0656
+CMD_IF               = $0662
+CI_SKIP              = $0676
+CI_TRUE              = $0681
+CI_THEN              = $0684
+CI_EXEC              = $068A
+CMD_FOR              = $0691
+CMD_NEXT             = $0692
+CMD_INPUT            = $0693
+CMD_LIST             = $0694
+CL_LP                = $069A
+CL_NEXT              = $06AB
+CMD_RUN              = $06B0
+RUN_PROG             = $06BB
+RP_NEXT              = $06CB
+RP_END               = $06D0
+CMD_CLS              = $06D5
+CL_LP2               = $06DA
+CMD_CLEAR            = $06E6
+CLR_LP               = $06E9
+CLR_DONE             = $06F0
+CMD_POKE             = $06F5
+CMD_PAUSE            = $070F
+CMD_STOP             = $0710
+CMD_NEW              = $0715
+CMD_RAND             = $0722
+CMD_PLOT             = $0723
+CMD_UNPLOT           = $0724
+CMD_LOAD             = $0725
+CMD_SAVE             = $0726
+UPDATE_DISPLAY       = $0727
+UD_ROW               = $0731
+UD_CO                = $073A
+UD_CH                = $073D
+UD_SP                = $074C
+UD_WR                = $074E
+UD_NX                = $0760
+CHAR_SET             = $0800
+E_LINE_BUF           = $1C00
+FP_VALUE             = $1E00
+FP_EXP               = $1E00
+FP_HIGH              = $1E01
+FP_LOW               = $1E02
+FP_STRLN             = $1E05
+FP_STRBUF            = $1E07
+FP_DECBUF            = $1E57
+RETURN               = $1E63
+ERR_NR               = $4000
+FLAGS                = $4001
+ERR_SP               = $4002
+RAMTOP               = $4004
+E_LINE               = $4006
+CH_ADD               = $4008
+X_PTR                = $400A
+D_FILE               = $400C
+DF_CC                = $400E
+VARS                 = $4010
+DEST                 = $4012
+E_LINE_LO            = $4014
+SPARE1               = $4016
+SPARE2               = $4018
+LAST_K               = $4025
+DEBOUNCE             = $4027
+MARGIN               = $4028
+FRAMES               = $4034
+CDFLAG               = $403B
