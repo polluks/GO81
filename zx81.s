@@ -198,6 +198,7 @@ INIT_C128:
 ; Init sysvars
     LD HL,0x5000
     LD (D_FILE),HL
+    LD (DF_CC),HL
     LD HL,0x4200
     LD (VARS),HL
     LD HL,E_LINE_BUF
