@@ -17,8 +17,7 @@ vasmz80_oldstyle -Fbin -o zx81.bin zx81.s
 1. Place `zx81.bin` and `go81` onto your Commodore 128 disk image.
 2. In C128 mode (BASIC 7.0):
 ```basic
-DLOAD "GO81"
-RUN
+RUN "GO81"
 ```
 
 ### Bootstrap Architecture & Safe Loading
@@ -26,5 +25,5 @@ Loading a binary directly to `$0000` via `BLOAD "ZX81.BIN",B0,P0` will corrupt P
 
 To prevent this:
 1. `go81` loads `ZX81.BIN` into a safe staging area at `$2000` (`BLOAD "ZX81.BIN",B0,P8192`).
-2. An 8502 helper at `$1300` disables interrupts (`SEI`), configures MMU Bank 0 to all-RAM (`$3E`), and copies the binary to `$0000–$1FFF`.
+2. An 8502 helper at `$4000` disables interrupts (`SEI`), configures MMU Bank 0 to all-RAM (`$3E`), and copies the binary to `$0000–$1FFF`.
 3. The helper sets the Z80 boot-link jump instruction (`JP $0000`) at `$FFEE–$FFF0` and triggers the Z80 by writing `$B0` to mode configuration register `$D505`.
